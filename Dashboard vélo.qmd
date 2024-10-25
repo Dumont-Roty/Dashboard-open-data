@@ -1,0 +1,203 @@
+---
+title: "Dashboard vélo"
+format: 
+  dashboard:
+    orientation: rows
+    theme: cosmo
+    embed-resources: true
+---
+
+```{r}
+library(flexdashboard)
+library(kableExtra)
+library(knitr)
+library(FactoMineR)
+library(factoextra)
+library(tidyverse)
+library(corrplot)
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(DT)
+df <- read.csv("D:/MEcEn/RMaster1/Open Data University/Data/modified_data.csv")
+df <- df[,-c(1)]
+```
+
+# Page 1
+
+## {Row {width = 20%}}
+
+```{r}
+#| content: valuebox
+#| title: "Nombre d'accident en 2023"
+
+list(
+  value = length(unique(df$Num_Acc))
+)
+```
+
+```{r}
+#| content: valuebox
+#| title: "Nombre de mort en 2023"
+list(
+value = sum(df$grav == "Tué", na.rm=TRUE)
+)
+```
+
+```{r}
+#| content: valuebox
+#| title: "Nombre de cycliste mort en 2023"
+
+list(
+value = nrow(df[df$grav=="Tué" & df$catv=="Bicyclette",])
+)
+
+```
+
+## {Column {width=40%}}
+
+```{r}
+df$grav <- as.factor(df$grav)
+df$obsm <- as.factor(df$obsm)
+
+# Créer un tableau de contingence pour compter les occurrences de chaque combinaison
+data_summary <- df %>%
+  group_by(obsm, grav) %>%
+  summarise(count = n(), .groups = 'drop')
+
+# Créer le graphique
+ggplot(data_summary, aes(x = obsm, y = count, fill = grav)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    title = "Gravité des blessures en fonction des obstacles mobiles",
+    x = "Obstacles Mobiles Heurtés",
+    y = "Nombre de Cas",
+    fill = "Gravité des Blessures"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+grav_agg_count <- df |> 
+  group_by(agg, grav) |> 
+  summarise(count = n(), .groups = 'drop')
+
+# Calculer les proportions
+grav_agg_count <- grav_agg_count |> 
+  group_by(agg) |> 
+  mutate(proportion = count / sum(count)) |> 
+  ungroup()
+
+# Créer le graphique
+ggplot(grav_agg_count, aes(x = agg, y = proportion, fill = grav)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_y_continuous(labels = scales::percent) +  # Afficher en pourcentage
+  labs(title = "Proportion des blessures en fonction de l'agglomération (NC)",
+       x = "Type d'agglomération",
+       y = "Proportion d'accidents",
+       fill = "Gravité des blessures") +
+  theme_minimal()
+```
+
+# Page 2 {orientation="rows"}
+
+```{r}
+# Installer et charger les bibliothèques nécessaires
+#install.packages("leaflet")
+library(sf)
+library(dplyr)
+library(leaflet)
+
+# Importer les données géographiques des départements français
+france_departments <- st_read("https://france-geojson.gregoiredavid.fr/repo/departements.geojson")
+
+# Charger vos données d'accidents (remplacez 'accidents.csv' par le chemin vers votre fichier de données)
+accidents_data <- read.csv("Data/modified_data.csv")
+
+# Filtrer les données d'accidents pour ne conserver que celles où catv == "Bicyclette"
+accidents_bicyclette <- accidents_data %>%
+  filter(catv == "Bicyclette")
+
+# Assurez-vous que vos données contiennent une colonne 'code_departement' correspondant aux départements
+# Exemple de structure de données d'accidents : accidents_bicyclette <- data.frame(code_departement = c("01", "02", ...), nombre_accidents = c(10, 15, ...))
+
+# Joindre les données d'accidents aux données géographiques
+accidents_summary <- accidents_bicyclette %>%
+  group_by(code_departement) %>%
+  summarise(nombre_accidents = n())
+
+# Joindre les données résumées aux données géographiques
+france_departments <- france_departments %>%
+  left_join(accidents_summary, by = c("code" = "code_departement"))
+
+# Définir les paliers pour la légende
+bins <- c(0, 50, 150, 300, Inf)
+pal <- colorBin("YlOrRd", domain = france_departments$nombre_accidents, bins = bins)
+
+# Créer une carte interactive avec leaflet
+leaflet(data = france_departments) %>%
+  addTiles() %>%
+  # Ajoute une couche de tuiles de base à la carte
+  addPolygons(
+    # Ajoute des polygones représentant les départements
+    fillColor = ~pal(nombre_accidents),
+    # Définit la couleur de remplissage des polygones en fonction du nombre d'accidents
+    weight = 1,
+    # Définit l'épaisseur des bordures des polygones
+    opacity = 1,
+    # Définit l'opacité des bordures des polygones
+    color = "white",
+    # Définit la couleur des bordures des polygones
+    dashArray = "3",
+    # Définit le style des bordures (ici, des tirets)
+    fillOpacity = 0.7,
+    # Définit l'opacité du remplissage des polygones
+    highlightOptions = highlightOptions(
+      # Options pour mettre en surbrillance les polygones au survol
+      weight = 2,
+      # Épaisseur des bordures en surbrillance
+      color = "#666",
+      # Couleur des bordures en surbrillance
+      dashArray = "",
+      # Style des bordures en surbrillance (ici, plein)
+      fillOpacity = 0.7,
+      # Opacité du remplissage en surbrillance
+      bringToFront = TRUE
+      # Amène le polygone en surbrillance au premier plan
+    ),
+    label = ~paste0("Département: ", nom, " Nombre d'accidents: ", nombre_accidents),
+    # Définit les étiquettes affichées au survol des polygones
+    labelOptions = labelOptions(
+      # Options pour les étiquettes
+      style = list("font-weight" = "normal", padding = "3px 8px"),
+      # Style des étiquettes (ici, poids normal et padding)
+      textsize = "15px",
+      # Taille du texte des étiquettes
+      direction = "auto"
+      # Direction automatique des étiquettes
+    )
+  ) %>%
+  addLegend(
+    # Ajoute une légende à la carte
+    pal = pal,
+    # Palette de couleurs pour la légende
+    values = ~nombre_accidents,
+    # Valeurs utilisées pour la légende
+    opacity = 0.7,
+    # Opacité de la légende
+    title = "Nombre d'accidents",
+    # Titre de la légende
+    position = "bottomright"
+    # Position de la légende (en bas à droite)
+  )
+```
+
+
+# Data
+
+```{r}
+#datatable(df)
+#A rajouter à la fin car alourdissement du fichier
+# retravailler le tableau pour l'allégér et n'utiliser que les données utilse
+```
