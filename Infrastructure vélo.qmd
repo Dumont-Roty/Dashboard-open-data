@@ -1,8 +1,7 @@
 ---
 title: "Open Data UNiversity"
 author: "Chloé, Rachel, Pierre"
-format: dashboard
-editor: visual
+format: html
 embed-resources: true
 ---
 
@@ -15,6 +14,12 @@ library(tidyverse)
 library(corrplot)
 library(ggplot2)
 library(dplyr)
+library(sf)
+library(leaflet)
+library(shiny)
+
+
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
 ```
 
 # Importation base de données modifié
@@ -26,8 +31,7 @@ df <- df[,-c(1)]
 
 #modification de la base données
 
-# Test de graphique 
-
+# Test de graphique
 
 ```{r}
 # Supposons que df est votre dataframe contenant les colonnes 'grav' et 'obsm'
@@ -51,11 +55,12 @@ ggplot(data_summary, aes(x = obsm, y = count, fill = grav)) +
   ) +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
 ```
 
 ```{r}
-grav_agg_count <- df 
+#| echo: false
+#| include: true 
+grav_agg_count <- df |> 
   group_by(agg, grav) %>%
   summarise(count = n(), .groups = 'drop')
 
@@ -76,15 +81,13 @@ ggplot(grav_agg_count, aes(x = agg, y = proportion, fill = grav)) +
   theme_minimal()
 ```
 
-# Cartographique des départements français : 
+# Cartographique des départements français :
+
 ## Nombre d'accidents par département en France
+
 ```{r}
 #| fig-cap: cartographie des accidents par département en France
 # Installer et charger les bibliothèques nécessaires
-library(sf)
-library(ggplot2)
-library(dplyr)
-
 # Importer les données géographiques des départements français
 france_departments <- st_read("https://france-geojson.gregoiredavid.fr/repo/departements.geojson")
 
@@ -107,19 +110,14 @@ france_departments <- france_departments %>%
 # Créer la carte avec ggplot2
 ggplot(data = france_departments) +
   geom_sf(aes(fill = nombre_accidents)) +
-  scale_fill_viridis_c(option = "cosmo", na.value = "grey90") +
+  scale_fill_viridis_c(option = "", na.value = "grey90") +
   theme_minimal() +
   labs(title = "Nombre d'accidents par département en France", fill = "Nombre d'accidents")
 ```
 
 ## Interactif + bicylette
-```{r}
-# Installer et charger les bibliothèques nécessaires
-#install.packages("leaflet")
-library(sf)
-library(dplyr)
-library(leaflet)
 
+```{r}
 # Importer les données géographiques des départements français
 france_departments <- st_read("https://france-geojson.gregoiredavid.fr/repo/departements.geojson")
 
@@ -135,16 +133,22 @@ accidents_bicyclette <- accidents_data %>%
 
 # Joindre les données d'accidents aux données géographiques
 accidents_summary <- accidents_bicyclette %>%
-  group_by(code_departement) %>%
-  summarise(nombre_accidents = n())
+  group_by(code_departement, grav) %>%
+  summarise(nombre_accidents = n()) %>%
+  pivot_wider(names_from = grav, values_from = nombre_accidents, values_fill = list(nombre_accidents = 0))
+
+# Ajouter une colonne 'total_accidents' pour le nombre total d'accidents par département
+accidents_summary <- accidents_summary %>%
+  rowwise() %>%
+  mutate(total_accidents = sum(c_across(starts_with("Indemne"):starts_with("Tué"))))
 
 # Joindre les données résumées aux données géographiques
 france_departments <- france_departments %>%
   left_join(accidents_summary, by = c("code" = "code_departement"))
 
 # Définir les paliers pour la légende
-bins <- c(0, 50, 150, 300, Inf)
-pal <- colorBin("YlOrRd", domain = france_departments$nombre_accidents, bins = bins)
+bins <- c(0, 20, 50, 125,Inf)
+pal <- colorBin("YlOrRd", domain = france_departments$total_accidents, bins = bins)
 
 # Créer une carte interactive avec leaflet
 leaflet(data = france_departments) %>%
@@ -152,8 +156,8 @@ leaflet(data = france_departments) %>%
   # Ajoute une couche de tuiles de base à la carte
   addPolygons(
     # Ajoute des polygones représentant les départements
-    fillColor = ~pal(nombre_accidents),
-    # Définit la couleur de remplissage des polygones en fonction du nombre d'accidents
+    fillColor = ~pal(total_accidents),
+    # Définit la couleur de remplissage des polygones en fonction du nombre total d'accidents
     weight = 1,
     # Définit l'épaisseur des bordures des polygones
     opacity = 1,
@@ -177,7 +181,16 @@ leaflet(data = france_departments) %>%
       bringToFront = TRUE
       # Amène le polygone en surbrillance au premier plan
     ),
-    label = ~paste0("Département: ", nom, " Nombre d'accidents: ", nombre_accidents),
+    label = ~paste0(
+      "<div>",
+      "Département: ", nom, "<br>",
+      "Nombre total d'accidents: ", total_accidents, "<br>",
+      "Indemne: ", Indemne, "<br>",
+      "Blessé léger: ", `Blessé léger`, "<br>",
+      "Blessé hospitalisé: ", `Blessé hospitalisé`, "<br>",
+      "Tué: ", Tué,
+      "</div>"
+    ),
     # Définit les étiquettes affichées au survol des polygones
     labelOptions = labelOptions(
       # Options pour les étiquettes
@@ -193,7 +206,7 @@ leaflet(data = france_departments) %>%
     # Ajoute une légende à la carte
     pal = pal,
     # Palette de couleurs pour la légende
-    values = ~nombre_accidents,
+    values = ~total_accidents,
     # Valeurs utilisées pour la légende
     opacity = 0.7,
     # Opacité de la légende
@@ -202,4 +215,214 @@ leaflet(data = france_departments) %>%
     position = "bottomright"
     # Position de la légende (en bas à droite)
   )
+```
+
+## Interactif + Gravité
+
+```{r} 
+# Importer les données géographiques des départements français
+france_departments <- st_read("https://france-geojson.gregoiredavid.fr/repo/departements.geojson")
+
+# Charger vos données d'accidents (remplacez 'accidents.csv' par le chemin vers votre fichier de données)
+accidents_data <- read.csv("Data/modified_data.csv")
+
+# Filtrer les données d'accidents pour ne conserver que celles où catv == "Bicyclette"
+accidents_bicyclette <- accidents_data %>%
+  filter(catv == "Bicyclette")
+
+# Assurez-vous que vos données contiennent une colonne 'code_departement' correspondant aux départements
+# Exemple de structure de données d'accidents : accidents_bicyclette <- data.frame(code_departement = c("01", "02", ...), nombre_accidents = c(10, 15, ...))
+
+# Joindre les données d'accidents aux données géographiques
+accidents_summary <- accidents_bicyclette %>%
+  group_by(code_departement, grav) %>%
+  summarise(nombre_accidents = n()) %>%
+  pivot_wider(names_from = grav, values_from = nombre_accidents, values_fill = list(nombre_accidents = 0))
+
+# Ajouter une colonne 'total_accidents' pour le nombre total d'accidents par département
+accidents_summary <- accidents_summary %>%
+  rowwise() %>%
+  mutate(total_accidents = sum(c_across(starts_with("Indemne"):starts_with("Tué"))))
+
+# Joindre les données résumées aux données géographiques
+france_departments <- france_departments %>%
+  left_join(accidents_summary, by = c("code" = "code_departement"))
+
+# Définir les paliers pour la légende
+bins <- c(0, 20, 50, 125, 250, Inf)
+pal <- colorBin("YlOrRd", domain = france_departments$total_accidents, bins = bins)
+
+# Créer une carte interactive avec leaflet
+leaflet(data = france_departments) %>%
+  addTiles() %>%
+  # Ajoute une couche de tuiles de base à la carte
+  addPolygons(
+    # Ajoute des polygones représentant les départements
+    fillColor = ~pal(total_accidents),
+    # Définit la couleur de remplissage des polygones en fonction du nombre total d'accidents
+    weight = 1,
+    # Définit l'épaisseur des bordures des polygones
+    opacity = 1,
+    # Définit l'opacité des bordures des polygones
+    color = "white",
+    # Définit la couleur des bordures des polygones
+    dashArray = "3",
+    # Définit le style des bordures (ici, des tirets)
+    fillOpacity = 0.7,
+    # Définit l'opacité du remplissage des polygones
+    highlightOptions = highlightOptions(
+      # Options pour mettre en surbrillance les polygones au survol
+      weight = 2,
+      # Épaisseur des bordures en surbrillance
+      color = "#666",
+      # Couleur des bordures en surbrillance
+      dashArray = "",
+      # Style des bordures en surbrillance (ici, plein)
+      fillOpacity = 0.7,
+      # Opacité du remplissage en surbrillance
+      bringToFront = TRUE
+      # Amène le polygone en surbrillance au premier plan
+    ),
+    label = ~paste0(
+      "Département: ", nom, "<br>",
+      "Nombre total d'accidents: ", total_accidents, "<br>",
+      "Indemne: ", Indemne, "<br>",
+      "Blessé léger: ", `Blessé léger`, "<br>",
+      "Blessé hospitalisé: ", `Blessé hospitalisé`, "<br>",
+      "Tué: ", Tué
+    ),
+    # Définit les étiquettes affichées au survol des polygones
+    labelOptions = labelOptions(
+      # Options pour les étiquettes
+      style = list("font-weight" = "normal", padding = "3px 8px"),
+      # Style des étiquettes (ici, poids normal et padding)
+      textsize = "15px",
+      # Taille du texte des étiquettes
+      direction = "auto"
+      # Direction automatique des étiquettes
+    )
+  ) %>%
+  addLegend(
+    # Ajoute une légende à la carte
+    pal = pal,
+    # Palette de couleurs pour la légende
+    values = ~total_accidents,
+    # Valeurs utilisées pour la légende
+    opacity = 0.7,
+    # Opacité de la légende
+    title = "Nombre d'accidents",
+    # Titre de la légende
+    position = "bottomright"
+    # Position de la légende (en bas à droite)
+  )
+```
+
+## tableau interactif 
+
+```{r}
+accidents_data <- read.csv("Data/modified_data.csv")
+
+# Filtrer les données d'accidents pour ne conserver que celles où catv == "Bicyclette"
+accidents_bicyclette <- accidents_data %>%
+  filter(catv == "Bicyclette")
+
+# Interface utilisateur
+ui <- fluidPage(
+  titlePanel("Analyse des accidents à bicyclette"),
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("departement", "Département", choices = unique(accidents_bicyclette$code_departement)),
+      selectInput("atm", "Conditions atmosphériques", choices = unique(accidents_bicyclette$atm)),
+      selectInput("sexe", "Sexe", choices = unique(accidents_bicyclette$sexe)),
+      actionButton("submit", "Soumettre")
+    ),
+    mainPanel(
+      textOutput("summary"),
+      tableOutput("details")
+    )
+  )
+)
+
+# Serveur
+server <- function(input, output) {
+  observeEvent(input$submit, {
+    filtered_data <- accidents_bicyclette %>%
+      filter(code_departement == input$departement,
+             atm == input$atm,
+             sexe == input$sexe)
+    
+    summary_text <- paste0(
+      "Nombre total d'accidents: ", nrow(filtered_data), "\n",
+      "Indemne: ", sum(filtered_data$grav == "Indemne"), "\n",
+      "Blessé léger: ", sum(filtered_data$grav == "Blessé léger"), "\n",
+      "Blessé hospitalisé: ", sum(filtered_data$grav == "Blessé hospitalisé"), "\n",
+      "Tué: ", sum(filtered_data$grav == "Tué")
+    )
+    
+    output$summary <- renderText({ summary_text })
+    output$details <- renderTable({ filtered_data })
+  })
+}
+
+# Lancer l'application shiny
+shinyApp(ui = ui, server = server)
+```
+
+## tableau interactif mais pas trop
+
+```{r}
+# Charger vos données d'accidents (remplacez 'accidents.csv' par le chemin vers votre fichier de données)
+accidents_data <- read.csv("Data/modified_data.csv")
+
+# Filtrer les données d'accidents pour ne conserver que celles où catv == "Bicyclette"
+accidents_bicyclette <- accidents_data %>%
+  filter(catv == "Bicyclette")
+
+# Interface utilisateur
+ui <- fluidPage(
+  titlePanel("Analyse des accidents à bicyclette"),
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("departement", "Département", choices = unique(accidents_bicyclette$code_departement)),
+      selectInput("atm", "Conditions atmosphériques", choices = unique(accidents_bicyclette$atm)),
+      selectInput("sexe", "Sexe", choices = unique(accidents_bicyclette$sexe)),
+      selectInput("lum", "Luminosité", choices = unique(accidents_bicyclette$lum)),
+      selectInput("int", "Intersection", choices = unique(accidents_bicyclette$int)),
+      selectInput("col", "Type de collision", choices = unique(accidents_bicyclette$col)),
+      actionButton("submit", "Soumettre")
+    ),
+    mainPanel(
+      tableOutput("summary")
+    )
+  )
+)
+
+# Serveur
+server <- function(input, output) {
+  observeEvent(input$submit, {
+    filtered_data <- accidents_bicyclette %>%
+      filter(code_departement == input$departement,
+             atm == input$atm,
+             sexe == input$sexe,
+             lum == input$lum,
+             int == input$int,
+             col == input$col)
+    
+    summary_data <- data.frame(
+      "Catégorie" = c("Nombre total d'accidents", "Indemne", "Blessé léger", "Blessé hospitalisé", "Tué"),
+      "Nombre" = c(
+        nrow(filtered_data),
+        sum(filtered_data$grav == "Indemne"),
+        sum(filtered_data$grav == "Blessé léger"),
+        sum(filtered_data$grav == "Blessé hospitalisé"),
+        sum(filtered_data$grav == "Tué")
+      )
+    )
+    
+    output$summary <- renderTable({ summary_data })
+  })
+}
+
+# Lancer l'application shiny
+shinyApp(ui = ui, server = server)
 ```
